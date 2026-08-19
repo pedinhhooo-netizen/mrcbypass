@@ -3,9 +3,6 @@ const cors      = require('cors');
 const http      = require('http');
 const WebSocket = require('ws');
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Setup
-// ─────────────────────────────────────────────────────────────────────────────
 const app    = express();
 const server = http.createServer(app);
 const wss    = new WebSocket.Server({ server });
@@ -13,9 +10,7 @@ const wss    = new WebSocket.Server({ server });
 app.use(cors());
 app.use(express.json());
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Health check — o site faz ping aqui a cada 5min pra Render não dormir
-// ─────────────────────────────────────────────────────────────────────────────
+// Health check — ping para Render não dormir
 app.get('/ping', (req, res) => res.json({ ok: true, ts: Date.now() }));
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -35,10 +30,32 @@ function createRoom(code) {
     remote:  null,
     clients: new Set(),
     state: {
-      aimHead: false, aimLegit: false, aimScope: false,
-      precision: false, pixelEstendido: false,
-      noRecoil: false, chams: false, loaded: false,
+      // ── Aimbot ──────────────────────────────────────────────────────────
+      aimbotMemory:  false,
+      aimbotLegit:   false,
+      aimbotNeck:    false,
+      precision:     false,
+      // ── ESP ─────────────────────────────────────────────────────────────
+      espEnabled:    false,
+      espBox:        false,
+      espSnapLines:  false,
+      espHealthBar:  false,
+      espName:       false,
+      espDistance:   false,
+      espWeapon:     false,
+      chams:         false,
+      // ── Exploits ────────────────────────────────────────────────────────
+      noRecoil:      false,
+      weaponAttribs: false,
+      spinBot:       false,
+      silentAim:     false,
+      // ── Configs ─────────────────────────────────────────────────────────
+      enableMemory:  false,
+      streamMode:    false,
+      // ── Status interno ──────────────────────────────────────────────────
+      loaded:        false,
     },
+    logs: [],        // array de strings — Memory Logs em tempo real
   });
   return rooms.get(code);
 }
@@ -61,7 +78,7 @@ wss.on('connection', (ws) => {
     let msg;
     try { msg = JSON.parse(raw.toString()); } catch { return; }
 
-    // Remote (EXE) se registra
+    // ── Remote (EXE) se registra ──────────────────────────────────────────
     if (msg.type === 'remote_hello') {
       const code = generateCode();
       const room = createRoom(code);
@@ -73,7 +90,7 @@ wss.on('connection', (ws) => {
       return;
     }
 
-    // Site entra numa sala
+    // ── Site entra numa sala ──────────────────────────────────────────────
     if (msg.type === 'client_join') {
       const code = msg.code;
       if (!rooms.has(code)) {
@@ -89,12 +106,13 @@ wss.on('connection', (ws) => {
       ws.roomCode = code;
       ws.role     = 'client';
       console.log(`[+] Cliente entrou na sala ${code}`);
-      ws.send(JSON.stringify({ type: 'joined', state: room.state }));
+      // Envia estado + logs históricos
+      ws.send(JSON.stringify({ type: 'joined', state: room.state, logs: room.logs }));
       room.remote.send(JSON.stringify({ type: 'client_connected' }));
       return;
     }
 
-    // Comandos / toggles do site → Remote
+    // ── Comandos / toggles do site → Remote ──────────────────────────────
     if (msg.type === 'command' || msg.type === 'toggle') {
       const code = ws.roomCode;
       if (!code || !rooms.has(code) || ws.role !== 'client') return;
@@ -112,13 +130,38 @@ wss.on('connection', (ws) => {
       return;
     }
 
-    // Estado atualizado vindo do Remote
+    // ── Estado atualizado vindo do Remote ─────────────────────────────────
     if (msg.type === 'state_update') {
       const code = ws.roomCode;
       if (!code || !rooms.has(code) || ws.role !== 'remote') return;
       const room = rooms.get(code);
       if (msg.state) Object.assign(room.state, msg.state);
       broadcastToClients(room, { type: 'state', state: room.state });
+      return;
+    }
+
+    // ── Log em tempo real vindo do Remote ─────────────────────────────────
+    if (msg.type === 'log') {
+      const code = ws.roomCode;
+      if (!code || !rooms.has(code) || ws.role !== 'remote') return;
+      const room = rooms.get(code);
+      const entry = { ts: Date.now(), text: msg.text || '' };
+      room.logs.push(entry);
+      // Mantém máximo de 500 linhas
+      if (room.logs.length > 500) room.logs.shift();
+      broadcastToClients(room, { type: 'log', entry });
+      return;
+    }
+
+    // ── Clear logs pedido pelo site ───────────────────────────────────────
+    if (msg.type === 'clear_logs') {
+      const code = ws.roomCode;
+      if (!code || !rooms.has(code) || ws.role !== 'client') return;
+      const room = rooms.get(code);
+      room.logs = [];
+      broadcastToClients(room, { type: 'logs_cleared' });
+      if (room.remote?.readyState === WebSocket.OPEN)
+        room.remote.send(JSON.stringify({ type: 'clear_logs' }));
       return;
     }
   });
